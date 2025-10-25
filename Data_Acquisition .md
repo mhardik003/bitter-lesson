@@ -11,16 +11,31 @@ Build an initial reference dataset of authoritative judgments to analyze citatio
 **Method:**
 
 ```bash
-wget -r -l1 -A pdf -np -nc https://main.sci.gov.in/judgments
+# Rail
+wget "https://www.iricen.gov.in/iricen/Works_Manuals/GCC-2022-ACS6.pdf"
+wget "https://indianrailways.gov.in/railwayboard/view_section.jsp?id=0%2C1%2C304%2C366%2C526%2C2624&lang=0"        # index page (bookmark for updates)
+wget "https://dfccil.com/upload/GCC_2022_4DXM.pdf"
+
+# Ports PPP
+wget "https://shipmin.gov.in/sites/default/files/Model%20Concession%20Agreement%2C%202021%20with%20Guiding%20Note_compressed_0.pdf"
+wget "https://www.pppinindia.gov.in/model_concession_agreement"  # index listing with port MCA link
+
+# Pipelines / Gas transportation
+wget "https://www.pngrb.gov.in/pdf/public-notice/DGTA24062021.pdf"          # PNGRB Gas Transportation Agreement format
+wget "https://gailebank.gail.co.in/goga/NewApplication/pdf/Approved%20GTA.pdf" # GAIL approved GTA template
+
+# PSU GCCs — Services/Goods (for variation across CPSEs)
+wget "https://tenders.bhel.com/sites/default/files/GCC_REV01-2025-01-02-08%3A58%3A10.pdf"           # BHEL GCC (Services)
+wget "https://pem.bhel.com/Documents/GCC/GCC-Rev-04.pdf"                                            # BHEL PEM GCC
+wget "https://gailonline.com/pdf/gcc/GCC-GoodsRev1.pdf"                                             # GAIL GCC Goods Rev.1 (Apr 2022)
+wget "https://gailonline.com/pdf/gcc/GCCCONSULTANCYSERVICES.pdf"                                    # GAIL GCC Consultancy Services
+wget "https://gailgaspdfdownloads.s3.ap-south-1.amazonaws.com/General-Conditions-of-Contract-Works%28GCC-Works%29-English-version.pdf"  # GAIL Gas GCC Works
+wget "https://iocl.com/uploads/PartB03022025.pdf"                                                   # IOCL tender Part B incl. GCC sections
+
 ```
 
-* `-r` enables recursive download
-* `-l1` limits recursion to one level (to avoid crawling entire site trees)
-* `-A pdf` fetches only PDF files
-* `-np` prevents moving up the directory tree
-* `-nc` avoids re-downloading files
 
-This provided a handful of **authentic Supreme Court judgments** in PDF form, which served as initial test data for text-extraction pipelines.
+This provided a handful of **authentic judgments** in PDF form, which served as initial test data for text-extraction pipelines.
 
 ---
 
