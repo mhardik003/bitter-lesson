@@ -1,0 +1,270 @@
+
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{enumitem}
+\usepackage{longtable}
+\usepackage{titlesec}
+\usepackage{listings}
+\usepackage{xcolor}
+\hypersetup{colorlinks=true,linkcolor=black,urlcolor=blue}
+\usepackage{array}
+\usepackage{xltabular}
+\usepackage{ragged2e}
+\usepackage{booktabs}
+\newcolumntype{Y}{>{\RaggedRight\arraybackslash}X} % wrapped, ragged-right column
+
+
+\titleformat{\section}{\normalfont\Large\bfseries}{}{0pt}{}
+\titleformat{\subsection}{\normalfont\large\bfseries}{}{0pt}{}
+
+\title{Bitter Lesson - Mid Submission Report\\Legal SME for Civil Law: Contracts and Agreements (India)}
+\author{Team: bitter lesson\\\small{Akshit Kumar, Hardik Mittal}}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section*{Executive Summary}
+This document reports the mid submission status of our project focused on a contract and agreement RAG-based Subject Matter Expert system intended for junior law associates. Scope covers the Indian Contract Act 1872 as the core statute but extends to a broad corpus of related material, including government General Conditions of Contract (GCC) documents, Model Concession Agreements (MCAs), tender templates, and relevant judgments and orders sourced from Supreme Court and High Court archives, all restricted to publicly available open sources.
+We have built a working pipeline: data acquisition, OCR to Markdown, preprocessing and chunking, dual index builds, and a qualitative retrieval evaluation across BM25, MPNet, and Legal-BERT. All scripts are open and reproducible.
+
+
+\section{Repository Layout}
+
+\section{Data Acquisition}
+
+\subsection{Phase 1 - Initial collection via \texttt{wget}}
+Goal: small seed corpus of government documents and GCC templates for contract language reference.
+
+\noindent Examples used:
+\begin{itemize}[leftmargin=1.2em]
+  \item \texttt{https://www.iricen.gov.in/iricen/Works\_Manuals/GCC-2022-ACS6.pdf}
+  \item \texttt{https://dfccil.com/upload/GCC\_2022\_4DXM.pdf}
+  \item \texttt{https://shipmin.gov.in/.../Model\%20Concession\%20Agreement\_2021\_...pdf}
+  \item \texttt{https://www.pngrb.gov.in/pdf/public-notice/DGTA24062021.pdf}
+  \item \texttt{https://gailonline.com/pdf/gcc/GCCCONSULTANCYSERVICES.pdf}
+  \item Additional CPSE GCC and tender PDFs from BHEL, GAIL, IOCL.
+\end{itemize}
+
+\subsection{Phase 2 - Manual case downloads from \texttt{sci.gov.in}}
+The Supreme Court site does not expose a convenient API. We curated a verified subset of judgments by manual search and download. Filenames were normalized by citation or date for traceability.
+
+\subsection{Phase 3 - Automated crawling of Indian Kanoon}
+We implemented a two stage crawler for \texttt{indiankanoon.org} to broaden coverage.
+
+\paragraph{Scraping strategy}
+\begin{itemize}[leftmargin=1.2em]
+  \item \textbf{Query design} combined statute anchors and context terms, for example: ``Section 10 Indian Contract Act validity'', ``Article 299 government contract'', ``power purchase agreement tariff CERC''.
+  \item \textbf{Session handling} with realistic headers to avoid light responses and handle pagination.
+  \item \textbf{Link extraction} captured canonical \texttt{/doc/<id>/} links with deduplication.
+  \item \textbf{Politeness} configurable delay between requests.
+\end{itemize}
+
+\paragraph{Downloader logic}
+\begin{itemize}[leftmargin=1.2em]
+  \item Reads discovered links, follows the PDF anchor, saves into \texttt{pdfs/}.
+  \item Uses \texttt{downloaded.txt} and \texttt{failures.txt} for resumable runs.
+  \item Filenames include the document id and judgment title.
+\end{itemize}
+
+\paragraph{Logging and resumption}
+Append only log files enable safe resume on failure and clean deduplication.
+
+\subsection{Phase 4 - Corpus assembly}
+We assemble a clean corpus with logs for provenance and deduplication. This feeds downstream OCR and chunking. Planned next steps include richer metadata extraction, OCR fallback for scans, and incremental refreshes.
+
+\section{OCR to Markdown}
+We adopted DeepSeek-OCR with vLLM to batch page level OCR directly to Markdown. Each page is an image request in a batch.
+
+\subsection{Script}
+\texttt{batch\_vllm\_ocr.py}
+
+\subsection{Key features}
+\begin{itemize}[leftmargin=1.2em]
+  \item Inputs default to \texttt{../data} when run inside the \texttt{ocr/} venv.
+  \item Outputs: per page \texttt{page.mmd} under \texttt{data\_md/work}, merged \texttt{.md} under \texttt{data\_md/md}, and a record in \texttt{corpus.jsonl}.
+  \item Skip existing files using raw file sha256 and \texttt{corpus.jsonl} lookup to avoid re OCR.
+  \item Per PDF progress via \texttt{tqdm} plus vLLM internal request bars.
+  \item Provenance markers in merged files: \texttt{<<<PAGE n>>>}.
+\end{itemize}
+
+\subsection{Notes on batching}
+On an L40S GPU, 32 pages per batch are stable at max tokens near 8192. Adjust as needed. You can autotune batch size by probing a warm up batch and backing off on out of memory.
+
+\section{Preprocessing and Chunking}
+\subsection{Cleaning}
+DeepSeek grounding tags are stripped and common OCR noise is removed before chunking.
+\begin{itemize}[leftmargin=1.2em]
+  \item Remove \texttt{<|ref|>...</|ref|>} and \texttt{<|det|>...</|det|>} tags.
+  \item Drop empty table cells and runs of \texttt{<td></td>} like patterns.
+  \item Collapse noisy punctuation such as ``. .'' into a single period and space.
+  \item Normalize whitespace and dashes. Preserve statute numbering.
+\end{itemize}
+
+\subsection{Section extraction}
+We detect sections with robust patterns for legal texts that may not use Markdown headings.
+\begin{itemize}[leftmargin=1.2em]
+  \item Lines like ``Section 74 ...'' or ``Sec. 74 ...''.
+  \item Numbered headings like ``74. Title ...''.
+\end{itemize}
+If no sections are found the entire document is treated as one section.
+
+\subsection{Chunking policy}
+We window by sentences into multi granularity chunks at 2048, 512, and 128 token targets. Chunk ids are deterministic and parseable:
+\begin{verbatim}
+<doc_id>::sec/<section_id>::g=<granularity>::o=<offset>
+\end{verbatim}
+Neighbor pointers connect adjacent sections to support multi step retrieval. We store cleaned display text and a lowercased normalized text for indexing.
+
+\section{Indexing}
+\subsection{Sparse}
+BM25 with rank\_bm25. We index the 512 token granularity by default.
+
+\subsection{Dense}
+FAISS IndexFlatIP with cosine equivalence. We built two dense indexes:
+\begin{itemize}[leftmargin=1.2em]
+  \item MPNet: \texttt{sentence-transformers/all-mpnet-base-v2}
+  \item Legal-BERT baseline: \texttt{nlpaueb/legal-bert-base-uncased}
+\end{itemize}
+
+\section{Evaluation Setup}
+We focus on a qualitative mid submission pass. We built 10 targeted queries and a batch evaluation script that prints a markdown table for side by side viewing.
+
+\subsection{Queries}
+Stored at \texttt{queries.jsonl}. Themes include offer and acceptance, S73 to S75 damages and penalties, S56 frustration, e contracts, arbitration agreement formation through electronic communications, and performance security in government templates.
+
+\subsection{Tools}
+\begin{itemize}[leftmargin=1.2em]
+  \item \texttt{batch\_eval\_to\_md.py} - runs all 10 queries and writes a markdown table.
+\end{itemize}
+
+\subsection{Pooling note for Legal-BERT}
+Legal-BERT is a masked language model. Cosine on CLS can be weak. For the mid pass we accept it as a baseline and may switch to mean pooling for a modest lift.
+
+\subsection{Result table}
+
+Full table can be found in `evals/` and in the appendix \ref{table}
+
+
+\paragraph{Qualitative Evaluation Summary}
+The evaluation compared three retrieval backends: BM25 (sparse lexical), MPNet (dense semantic), and Legal-BERT (domain-tuned masked LM used as dense baseline) across ten structured queries derived from statutory and contractual themes under Indian law.
+
+\begin{itemize}[leftmargin=1.2em]
+  \item \textbf{BM25:} Excelled at retrieving verbatim clause-level text where keywords matched directly (e.g., “WhatsApp contract”, “Section 56 frustration”), and surfaced judgment facts and party communications accurately. However, its results were often repetitive across top chunks and lacked conceptual grouping for statute sections.
+  \item \textbf{MPNet:} Produced the most contextually correct results overall. It consistently aligned queries with relevant statutory extracts (e.g., Sections 73–75, Section 74) and doctrinal explanations (e.g., \textit{Fateh Chand v. Balkishan Das}). It captured semantic proximity even when exact legal terms varied, showing strong generalization to Indian legal phrasing despite not being domain-finetuned.
+  \item \textbf{Legal-BERT:} Underperformed on sentence-level retrieval because CLS pooling from a masked LM is not optimized for cosine similarity. It frequently returned unrelated snippets (e.g., random contract templates or Specific Relief Act fragments). Mean pooling or fine-tuning on contrastive objectives is expected to improve future results.
+\end{itemize}
+
+Overall, MPNet delivered the most legally coherent and interpretable retrievals, while BM25 served as a reliable factual complement. Legal-BERT remains a valid baseline for demonstrating domain adaptation effects but requires further embedding calibration. The evaluation confirms that dense retrieval with general-purpose sentence embeddings is already competitive for Indian legal text when combined with minimal preprocessing and document-level chunking.
+
+
+
+\section{Reproducibility - Commands}
+\subsection{OCR}
+\begin{verbatim}
+python batch_vllm_ocr.py \
+  --input ../data --out ../data_md --tmp ../data_tmp \
+  --dpi 300 --batch_pages 16 \
+  --model_id deepseek-ai/DeepSeek-OCR \
+  --prompt "<image>\n<|grounding|>Convert the document to markdown."
+\end{verbatim}
+
+\subsection{Chunk and index}
+\begin{verbatim}
+python chunk_and_index.py \
+  --md_dir data_md/md --out_dir data_out \
+  --granularities 2048,512,128 \
+  --bm25_granularity 512 --faiss_granularity 512 \
+  --vector_model sentence-transformers/all-mpnet-base-v2 --device cpu
+
+python chunk_and_index.py \
+  --md_dir data_md/md --out_dir data_out \
+  --bm25_granularity 512 --faiss_granularity 512 \
+  --vector_model nlpaueb/legal-bert-base-uncased --device cpu
+\end{verbatim}
+
+\subsection{Batch evaluation}
+\begin{verbatim}
+python batch_eval_to_md.py \
+  --queries eval/queries.jsonl --chunks data_out/chunks.jsonl \
+  --bm25 data_out/index/bm25/bm25_g512.pkl \
+  --mpnet_index data_out/index/vector/faiss_sentence-transformers-all-mpnet-base-v2_g512.index \
+  --mpnet_ids   data_out/index/vector/faiss_sentence-transformers-all-mpnet-base-v2_g512.ids \
+  --legal_index data_out/index/vector/faiss_nlpaueb-legal-bert-base-uncased_g512.index \
+  --legal_ids   data_out/index/vector/faiss_nlpaueb-legal-bert-base-uncased_g512.ids \
+  --device cpu --topk 3 --out_md eval/results.md --snippet_chars 300
+\end{verbatim}
+
+
+\section{Planned Work for Final}
+\begin{itemize}[leftmargin=1.2em]
+  \item Expand corpus with more GCC and sectoral MCAs and richer metadata extraction.
+  \item Add a reranker to get better retrieval results.
+  \item Add hybrid scoring with RRF lines in batch reports and a light reranker for top 50.
+  \item Implement per page bounding box capture for highlight rendering and citation pointers.
+\end{itemize}
+
+\appendix
+\section{Results table}
+\label{table}
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.15}
+
+\begin{xltabular}{\textwidth}{|p{3.2cm}|p{2.2cm}|Y|Y|Y|}
+\caption{Model retrieval comparison across legal queries}\label{tab:model_retrievals}\\
+\hline
+\textbf{Question} & \textbf{Model Name} & \textbf{Chunk 1 text} & \textbf{Chunk 2 text} & \textbf{Chunk 3 text} \\
+\hline
+\endfirsthead
+
+\hline
+\textbf{Question} & \textbf{Model Name} & \textbf{Chunk 1 text} & \textbf{Chunk 2 text} & \textbf{Chunk 3 text} \\
+\hline
+\endhead
+
+\hline
+\endfoot
+
+\hline
+\endlastfoot
+
+\endlastfoot
+
+
+       What amounts to a valid offer and acceptance under Indian contract law, and how are offers through email or WhatsApp treated? & BM25 & 14. From 03 November 2022 to 14 November 2022, the petitioner sent multiple reminders to SMN via WhatsApp and email requesting the signed contract and settlement in advance payment. On 14 November 2022 SMN responded to the petitioner's reminders by email and WhatsApp for signed contract and advance… & 14. From 03 November 2022 to 14 November 2022, the petitioner sent multiple reminders to SMN via WhatsApp and email requesting the signed contract and settlement in advance payment. On 14 November 2022 SMN responded to the petitioner's reminders by email and WhatsApp for signed contract and advance… & 6. Further, discussions took place via WhatsApp and on 01 October 2022, the petitioner formally offered to sell between 75,000MT to 150,000MT (+/-10\%) of coal on a CFR basis two ports (Paradip and Sagar) at a price of USD 155.50 PMT or basis one port (Sandheads) at a price of USD 150 PMT dated (her… \\ 
+        What amounts to a valid offer and acceptance under Indian contract law, and how are offers through email or WhatsApp treated? & MPNet & Section 7 of the Indian Contract Act stipulated that an acceptance must be absolute and unconditional has also been fulfilled. It is true that in the first acceptance conveyed by the respondent contained a rider, namely, cancellation after 2 shipments which made acceptance conditional. However, tak… & Sec. 11. & For example, A agreed to pay Rs. 10,000 to B if he (B) does not marry throughout this life. B promised not to marry at all. This agreement shall not be valid because it is in restraint of marriage which has been expressly declared void under Section 26. You should note that if an agreement possesse… \\ 
+        What amounts to a valid offer and acceptance under Indian contract law, and how are offers through email or WhatsApp treated? & Legal-BERT & EVENT. Producer reserves right to withhold services if a signed Agreement Memo and payments are not received in accordance with this schedule. Terms on unpaid additional amounts: $\backslash$(2$\backslash$\%$\backslash$) per month after 7 days.  2) Commencement of this event and physical delivery of this contract constitute verific… & EVENT. Producer reserves right to withhold services if a signed Agreement Memo and payments are not received in accordance with this schedule. Terms on unpaid additional amounts: $\backslash$(2$\backslash$\%$\backslash$) per month after 7 days.  2) Commencement of this event and physical delivery of this contract constitute verific… & Chellappa; Rajesh Mohata; Shanika; SR Subramanyam;  Subject: Re: LM Grade Bauxite specs '1 (2). Doc  Dear Mr. Swaminathan,  Please send your rates at your proposed quality parameters on FOB basis and on CIF basis, separately. We would also be interested to have separate rates for 2 shipments and fo… \\ 
+        When can a penalty or liquidated damages clause be reduced by courts under Section 74 of the Indian Contract Act? & BM25 & 65. When there is a breach of contract, the aggrieved party, does not ipso facto become entitled to debt due from the other party. The only right it has is the right to sue for damages. The aggrieved party is not entitled to compensation/damages due to an existing obligation on part of the party wh… & 65. When there is a breach of contract, the aggrieved party, does not ipso facto become entitled to debt due from the other party. The only right it has is the right to sue for damages. The aggrieved party is not entitled to compensation/damages due to an existing obligation on part of the party wh… & 1. Where a sum is named in a contract as a liquidated amount payable by way of damages, the party complaining of a breach can receive as reasonable compensation such liquidated amount only if it is a genuine pre-estimate of damages fixed by both parties and found to be such by the Court. In other c… \\ 
+        When can a penalty or liquidated damages clause be reduced by courts under Section 74 of the Indian Contract Act? & MPNet & 33. Section 74 occurs in Chapter 6 of the Indian Contract Act, 1872 which reads “Of the consequences of breach of contract”. It is in fact sandwiched between Sections 73 and 75 which deal with compensation for loss or damage caused by breach of contract and compensation for damage which a party may… & 33. Section 74 occurs in Chapter 6 of the Indian Contract Act, 1872 which reads “Of the consequences of breach of contract”. It is in fact sandwiched between Sections 73 and 75 which deal with compensation for loss or damage caused by breach of contract and compensation for damage which a party may… & Section 74.  3.7. Section 74 only deals with a quantum of damages and has no bearing upon the validity of a contract which exempts the liability of one of the parties. The only other section which requires consideration is section 151, which  <<<PAGE 9>>>  certainly imposes liability upon the baile… \\ 
+        When can a penalty or liquidated damages clause be reduced by courts under Section 74 of the Indian Contract Act? & Legal-BERT & 10. What agreements are contracts.—All agreements are contracts if they are made by the free consent of parties competent to contract, for a lawful consideration and with a lawful object, and are not hereby expressly declared to be void. Nothing herein contained shall affect any law in force in ' [… & 27. When rescission may be adjudged or refused.—(1) Any person interested in a contract may sue to have it rescinded, and such rescission may be adjudged by the court in any of the following cases, namely:—  (a) where the contract is voidable or terminable by the plaintiff;  (b) where the contract … & 177. Defaulting pawner's right to redeem.—If a time is stipulated for the payment of the debt, or performance of the promise, for which the pledge is made, and the pawnor makes default in payment of the debt or performance of the promise at the stipulated time, he may redeem the goods pledged at an… \\ 
+        Explain frustration under Section 56 and when a contract becomes void due to impossibility. & BM25 & 47. While considering the enforceability of foreign awards, the court does not exercise appellate jurisdiction over the foreign award nor does it enquire as to whether, while rendering foreign award, some error has been committed. Under Section 48(2)(b) the enforcement of a foreign award can be ref… & 51. In $\backslash$*Boothalinga Agencies v. V.T.C. Poriaswami Nadar$\backslash$*, AIR 1969 SC 110 again the doctrine of frustration of contract came up for consideration. It was held that the provisions of section 56 of the Contract Act could not apply to self-induced frustration. The relevant portion is extracted hereu… & 10. Although various theories have been propounded by the Judges and jurists in England regarding the juridical basis of the doctrine of frustration, yet the essential idea upon which the doctrine is based is that of impossibility of performance of the contract; in fact, impossibility and frustrati… \\ 
+        Explain frustration under Section 56 and when a contract becomes void due to impossibility. & MPNet & 46. Section 56 of the Contract Act deals with the agreement to do an impossible act or to do acts afterward become impossible or unlawful. It also provides for liability of the promisor to do something which he knew or might have known with reasonable diligence an act which is impossible or unlawfu… & 51. In $\backslash$*Boothalinga Agencies v. V.T.C. Poriaswami Nadar$\backslash$*, AIR 1969 SC 110 again the doctrine of frustration of contract came up for consideration. It was held that the provisions of section 56 of the Contract Act could not apply to self-induced frustration. The relevant portion is extracted hereu… & 48. In the present case, because of the clear stipulation in Clause 14 of the Agreement, it is apparent that the parties have agreed for a contingent contract. They knew very well that the Government's executive, or legislative actions might come in the way as provided in Clause 14 of the Agreement… \\ 
+        Explain frustration under Section 56 and when a contract becomes void due to impossibility. & Legal-BERT & 43A. Compensation for failure to protect data.- Where a body corporate, possessing, dealing or handling any sensitive personal data or information in a computer resource which it owns, controls or operates, is negligent in implementing and maintaining reasonable security practices and procedures an… & 3. Bar of limitation.—(1) Subject to the provisions contained in sections 4 to 24 (inclusive), every suit instituted, appeal preferred, and application made after the prescribed period shall be dismissed, although limitation has not been set up as a defence. (2) For the purposes of this Act,—  $\backslash$((a… & 72. Liability of person to whom money is paid, or thing delivered, by mistake or under coercion. A person to whom money has been paid, or anything delivered, by mistake or under coercion, must repay or return it. \\ 
+        What is the difference between liquidated damages and penalty in Indian law, and which Supreme Court cases define the standard? & BM25 & 65. When there is a breach of contract, the aggrieved party, does not ipso facto become entitled to debt due from the other party. The only right it has is the right to sue for damages. The aggrieved party is not entitled to compensation/damages due to an existing obligation on part of the party wh… & 65. When there is a breach of contract, the aggrieved party, does not ipso facto become entitled to debt due from the other party. The only right it has is the right to sue for damages. The aggrieved party is not entitled to compensation/damages due to an existing obligation on part of the party wh… & 34. In Fateh Chand v. Balkishan Das, 1964 SCR (1) 515, this  Court held:  "The section is clearly an attempt to eliminate the somewhat elaborate refinements made under the English common law in distinguishing between stipulations providing for payment of liquidated damages and stipulations in the n… \\ 
+        What is the difference between liquidated damages and penalty in Indian law, and which Supreme Court cases define the standard? & MPNet & 1. Where a sum is named in a contract as a liquidated amount payable by way of damages, the party complaining of a breach can receive as reasonable compensation such liquidated amount only if it is a genuine pre-estimate of damages fixed by both parties and found to be such by the Court. In other c… & 1. Where a sum is named in a contract as a liquidated amount payable by way of damages, the party complaining of a breach can receive as reasonable compensation such liquidated amount only if it is a genuine pre-estimate of damages fixed by both parties and found to be such by the Court. In other c… & 65. When there is a breach of contract, the aggrieved party, does not ipso facto become entitled to debt due from the other party. The only right it has is the right to sue for damages. The aggrieved party is not entitled to compensation/damages due to an existing obligation on part of the party wh… \\ 
+        What is the difference between liquidated damages and penalty in Indian law, and which Supreme Court cases define the standard? & Legal-BERT & Co. v. Crompton Brothers is relevant here. In this case there was an agreement between Rose \& Frank Company and Crompton Brothers Ltd. whereby the former was appointed as selling agents in North America. One of the clauses in the agreement read, "This agreement is not entered into as a formal or le… & 209. Agent's duty on termination of agency by principal's death or insanity.—When an agency is terminated by the principal dying or becoming of unsound mind, the agent is bound to take, on behalf of the representatives of his late principal, all reasonable steps for the protection and preservation … & b. Chain of Command for reporting  xiii) Procedure for review of the work of consultant after award of contract  <<<PAGE 175>>> \\ 
+        Are e-contracts and clickwrap agreements enforceable in India? Point to the statutory basis and key cases. & BM25 & Fig. 6.1 shows the process of contract development. The event management company (EMC) after winning the bid to produce an event, based on the bid proposal / event proposal (discussed in detail in Units 3 and 4 of Block- 1, in this Course) that was submitted by the EMC, starts writing down everythi… & Fig. 6.1 shows the process of contract development. The event management company (EMC) after winning the bid to produce an event, based on the bid proposal / event proposal (discussed in detail in Units 3 and 4 of Block- 1, in this Course) that was submitted by the EMC, starts writing down everythi… & Sec. 84. — The section should be amended so as to include the case of payment of money or delivery of property, as suggested [Paragraph 100]. Code of Civil Procedure, 1908. Order VIII (or some other suitable place).—The advisability of a specific provision relating to the defence open to a defendan… \\ 
+        Are e-contracts and clickwrap agreements enforceable in India? Point to the statutory basis and key cases. & MPNet & 10. What agreements are contracts.—All agreements are contracts if they are made by the free consent of parties competent to contract, for a lawful consideration and with a lawful object, and are not hereby expressly declared to be void. Nothing herein contained shall affect any law in force in ' [… & 10A. Validity of contracts formed through electronic means. & Section 7 of the Indian Contract Act stipulated that an acceptance must be absolute and unconditional has also been fulfilled. It is true that in the first acceptance conveyed by the respondent contained a rider, namely, cancellation after 2 shipments which made acceptance conditional. However, tak… \\ 
+        Are e-contracts and clickwrap agreements enforceable in India? Point to the statutory basis and key cases. & Legal-BERT & 32. What instruments may be partially cancelled. Where an instrument is evidence of different rights or different obligations, the court may, in a proper case, cancel it in part and allow it to stand for the residue. & 11. Who are competent to contract.—Every person is competent to contract who is of the age of majority according to the law to which he is subject, and who is of sound mind, and is not disqualified from contracting by any law to which he is subject. & 98. No change is necessary in sections 52 and 53. \\ 
+        What are the usual termination for convenience and force majeure clauses in Government EPC/GCC templates, and how are notice and cure periods framed? & BM25 & 10. What agreements are contracts.—All agreements are contracts if they are made by the free consent of parties competent to contract, for a lawful consideration and with a lawful object, and are not hereby expressly declared to be void. Nothing herein contained shall affect any law in force in ' [… & 10. The learned arbitrator then construed clause 23, which speaks of 'material breaches' by the parties, as follows:  "132. The Tribunal's conclusions are as follows:  <<<PAGE 15>>>  1) Clauses 23.1 and 23.2 do require the giving of a Determination Notice of an Event of Default by the Non Defaultin… & 12. The 'Second Partial Final Award' dated 19.12.2013 then dealt with which of the parties materially breached the terms and conditions of the JVA. The claims, in this respect, made by Respondent No.1, were disposed of as follows:  "199. The Tribunal's findings and conclusions in relation to the pa… \\ 
+        What are the usual termination for convenience and force majeure clauses in Government EPC/GCC templates, and how are notice and cure periods framed? & MPNet & 6. Schedule-J: Tests on Completion: Paragraphs 2.1 and 2.2.  <<<PAGE 191>>> & 20C. Expeditious disposal of suits.—Notwithstanding anything contained in the Code of Civil Procedure, 1908 (5 of 1908), a suit filed under the provisions of this Act shall be disposed of by the court within a period of twelve months from the date of service of summons to the defendant:  Provided t… & 208. When termination of agent's authority takes effect as to agent, and as to third persons.—The termination of the authority of an agent does not, so far as regards the agent, take effect before it becomes known to him, or, so far as regards third persons, before it becomes known to them. \\ 
+        What are the usual termination for convenience and force majeure clauses in Government EPC/GCC templates, and how are notice and cure periods framed? & Legal-BERT & Fig. 6.1 shows the process of contract development. The event management company (EMC) after winning the bid to produce an event, based on the bid proposal / event proposal (discussed in detail in Units 3 and 4 of Block- 1, in this Course) that was submitted by the EMC, starts writing down everythi… & Fig. 6.1 shows the process of contract development. The event management company (EMC) after winning the bid to produce an event, based on the bid proposal / event proposal (discussed in detail in Units 3 and 4 of Block- 1, in this Course) that was submitted by the EMC, starts writing down everythi… & On 11.5 meters Draft they have indicated an increase of US$\backslash$(3.5 pmt which will make the price US$\backslash$)97.00 pmt CIF Free Out kakinada if you were to have an option additionally for Kakinada. The following terms would be applicable:  - Discharge port to be declared before vessels arrival at load port.  … \\ 
+        Under Sections 73–75, how is compensation for breach assessed and what is the role of mitigation? & BM25 & 33. Section 74 occurs in Chapter 6 of the Indian Contract Act, 1872 which reads “Of the consequences of breach of contract”. It is in fact sandwiched between Sections 73 and 75 which deal with compensation for loss or damage caused by breach of contract and compensation for damage which a party may… & 33. Section 74 occurs in Chapter 6 of the Indian Contract Act, 1872 which reads “Of the consequences of breach of contract”. It is in fact sandwiched between Sections 73 and 75 which deal with compensation for loss or damage caused by breach of contract and compensation for damage which a party may… & 17. Application of certain sections to contracts for sale or hire of movable property. The provisions of sections 15 and 16 as to contracts for the sale or letting of immovable property shall, mutatis mutandis, apply to contracts for the sale or hire of movable property.  [Sec. 19] 18. Power to awa… \\ 
+        Under Sections 73–75, how is compensation for breach assessed and what is the role of mitigation? & MPNet & 73. Compensation for loss or damage caused by breach of contract. When a contract has been broken, the party who suffers by such breach is entitled to receive, from the party who has broken the contract, compensation for any loss or damage caused to him thereby, which naturally arose in the usual c… & 73. Compensation for loss or damage caused by breach of contract. When a contract has been broken, the party who suffers by such breach is entitled to receive, from the party who has broken the contract, compensation for any loss or damage caused to him thereby, which naturally arose in the usual c… & 3. Since Section 74 awards reasonable compensation for damage or loss caused by a breach of contract, damage or loss caused is a sine qua non for the applicability of the Section. \\ 
+        Under Sections 73–75, how is compensation for breach assessed and what is the role of mitigation? & Legal-BERT & 209. Agent's duty on termination of agency by principal's death or insanity.—When an agency is terminated by the principal dying or becoming of unsound mind, the agent is bound to take, on behalf of the representatives of his late principal, all reasonable steps for the protection and preservation … & Co. v. Crompton Brothers is relevant here. In this case there was an agreement between Rose \& Frank Company and Crompton Brothers Ltd. whereby the former was appointed as selling agents in North America. One of the clauses in the agreement read, "This agreement is not entered into as a formal or le… & 104. Dr. Singhvi then argued that the tribunal's ruling in the First and Second Partial Final Award, with regard to the interpretation of clause 21, is inconsistent and irreconcilable. Apart from the fact that we do not find anything in the said two awards with regard to clause 21 being inconsisten… \\ 
+        How is an arbitration clause communicated via electronic correspondence treated at the prima facie stage under Section 7 of the Arbitration and Conciliation Act? & BM25 & 49. Section 7 of the Arbitration and Conciliation Act, 1996 defines an Arbitration Agreement. Section 7(4)(b) of the Act reads as under:-  "Section 7  (4) An arbitration agreement is in writing if it is contained in—  (a). (b) an exchange of letters, telex, telegrams or other means of telecommunica… & 49. Section 7 of the Arbitration and Conciliation Act, 1996 defines an Arbitration Agreement. Section 7(4)(b) of the Act reads as under:-  "Section 7  (4) An arbitration agreement is in writing if it is contained in—  (a). (b) an exchange of letters, telex, telegrams or other means of telecommunica… & 48. From the aforesaid facts and stand of the parties, to my mind, three questions arise for determination by this Court:  (i) Whether the documents and correspondence show existence of a valid arbitration agreement between the parties? (ii) Whether this Court has the territorial jurisdiction to en… \\ 
+        How is an arbitration clause communicated via electronic correspondence treated at the prima facie stage under Section 7 of the Arbitration and Conciliation Act? & MPNet & 49. Section 7 of the Arbitration and Conciliation Act, 1996 defines an Arbitration Agreement. Section 7(4)(b) of the Act reads as under:-  "Section 7  (4) An arbitration agreement is in writing if it is contained in—  (a). (b) an exchange of letters, telex, telegrams or other means of telecommunica… & 49. Section 7 of the Arbitration and Conciliation Act, 1996 defines an Arbitration Agreement. Section 7(4)(b) of the Act reads as under:-  "Section 7  (4) An arbitration agreement is in writing if it is contained in—  (a). (b) an exchange of letters, telex, telegrams or other means of telecommunica… & 53. A perusal of Section 7(4)(b) of the Act reveals that it is not necessary for a concluded contract to be in existence for a valid arbitration agreement to be existing between the parties. The arbitration agreement must form a part of documents/communication exchange between the parties. The same… \\ 
+        How is an arbitration clause communicated via electronic correspondence treated at the prima facie stage under Section 7 of the Arbitration and Conciliation Act? & Legal-BERT & a. Counterpart Project Manager and Team & a. Counterpart Project Manager and Team & 79A. Central Government to notify Examiner of Electronic Evidence. The Central Government may, for the purposes of providing expert opinion on electronic form evidence before any court or other authority specify, by notification in the Official Gazette, any Department, body or agency of the Central… \\ 
+        What are standard security/performance guarantee requirements in model concession agreements or EPC contracts issued by Indian ministries? & BM25 & 10. What agreements are contracts.—All agreements are contracts if they are made by the free consent of parties competent to contract, for a lawful consideration and with a lawful object, and are not hereby expressly declared to be void. Nothing herein contained shall affect any law in force in ' [… & 60. The question has frequently arisen in Courts as regards the validity of the agreements collateral to wagering contracts. It has been uniformly decided by all the High Courts, other than the Bombay High Court, that though an agreement by way of wager is void, a contract collateral to it, or in r… & 10. What agreements are contracts.—All agreements are contracts if they are made by the free consent of parties competent to contract, for a lawful consideration and with a lawful object, and are not hereby expressly declared to be void. Nothing herein contained shall affect any law in force in ' [… \\ 
+        What are standard security/performance guarantee requirements in model concession agreements or EPC contracts issued by Indian ministries? & MPNet & 8. The Performance Security shall cease to be in force and effect when the Concessionaire shall have expended on Project construction an aggregate sum not less than $\backslash$(30$\backslash$\%$\backslash$) (thirty per cent) of the Bid Project cost which is deemed to be Rs.$\backslash$$\backslash$*$\backslash$$\backslash$*$\backslash$$\backslash$* cr. (Rupees $\backslash$$\backslash$*$\backslash$$\backslash$*$\backslash$$\backslash$*$\backslash$$\backslash$* crore) for the purposes… & 6. This Guarantee is in addition to and not in substitution of any other guarantee or security now or which may hereafter be held by the Authority in respect of or relating to the Agreement or for the fulfillment, compliance and/or performance of all or any of the obligations of the Concessionaire … & 2. Cartel, a penalty of up to three times of its profit for each year of the continuance of such agreement or $\backslash$(10$\backslash$\%$\backslash$) (ten percent) of its turnover for each year of the continuance of such agreement, whichever is higher  c) Order the parties to Cease \& Desist  d) Modification of agreements  e) Rem… \\ 
+        What are standard security/performance guarantee requirements in model concession agreements or EPC contracts issued by Indian ministries? & Legal-BERT & 43A. Compensation for failure to protect data.- Where a body corporate, possessing, dealing or handling any sensitive personal data or information in a computer resource which it owns, controls or operates, is negligent in implementing and maintaining reasonable security practices and procedures an… & 169. When finder of thing commonly on sale may sell it.—When a thing which is commonly the subject of sale is lost, if the owner cannot with reasonable diligence be found, or if he refuses, upon demand, to pay the lawful charges of the finder, the finder may sell it—  (1) when the thing is in dange… & 8. Acceptance by performing conditions, or receiving consideration.—Performance of the conditions of a proposal, or the acceptance of any consideration for a reciprocal promise which may be offered with a proposal, is an acceptance of the proposal. \\ 
+        What limitations exist on specific performance compared to damages, and what do Law Commission reports say about reforms to Specific Relief? & BM25 & 50. It is not clear from clause II at what point of time the circumstances causing the hardship must exist in order to be a ground for refusing specific performance. In England, it has been established that as a general rule hardship, to operate as a ground of defence, must have existed at the time… & 2. AIR 1982 SC 818. & 5. Specific Relief, 2nd Ed., p. 343. \\ 
+        What limitations exist on specific performance compared to damages, and what do Law Commission reports say about reforms to Specific Relief? & MPNet & 4. Specific relief granted only to enforce civil rights. Specific relief under this Act can be granted only for the enforcement of individual civil rights and not for the mere purpose of enforcing a penal law. & 9. Defences respecting suits for relief based on contract.—Except as otherwise provided herein where any relief is claimed under this Chapter in respect of a contract, the person against whom the relief is claimed may plead by way of defence any ground which is available to him under any law relati… & 102. In England, it is well-settled that since the passing of the Judicature Act, 1873, the High Court can, in an action for injunction, exercise its discretion to award damages either in addition to, or in substitution for, an injunction, whether or not damages have also been specifically claimed.… \\ 
+        What limitations exist on specific performance compared to damages, and what do Law Commission reports say about reforms to Specific Relief? & Legal-BERT & 2. Cartel, a penalty of up to three times of its profit for each year of the continuance of such agreement or $\backslash$(10$\backslash$\%$\backslash$) (ten percent) of its turnover for each year of the continuance of such agreement, whichever is higher  c) Order the parties to Cease \& Desist  d) Modification of agreements  e) Rem… & 2. Cartel, a penalty of up to three times of its profit for each year of the continuance of such agreement or $\backslash$(10$\backslash$\%$\backslash$) (ten percent) of its turnover for each year of the continuance of such agreement, whichever is higher  c) Order the parties to Cease \& Desist  d) Modification of agreements  e) Rem… & b. Chain of Command for reporting  xiii) Procedure for review of the work of consultant after award of contract  <<<PAGE 175>>> \\ \hline
+
+\end{xltabular}
+\end{document}
