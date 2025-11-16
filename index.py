@@ -2,14 +2,15 @@ import json
 import sqlite3
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 from tqdm import tqdm
 import faiss
 import numpy as np
 from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
+import time
 
-from chunk import (
+from chunker import (
     chunk_md_with_granularities,
     deepseek_clean,
     _split_into_pages,
@@ -375,6 +376,16 @@ class LegalIndexer:
 
         return results
 
+    def get_doc_metadata(self, doc_id: str) -> Dict[str, Any]:
+        cur = self.conn.cursor()
+        row = cur.execute("SELECT * FROM docs where doc_id = ?", (doc_id,)).fetchone()
+        if not row:
+            raise ValueError(f"Unknown doc_id: {doc_id}")
+        if row["extracted_meta_json"]:
+            return json.loads(row["extracted_meta_json"])
+        else:
+            raise ValueError(f"Metadata not found for doc_id: {doc_id}")
+
     def search_faiss(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """
         Semantic search over chunks.
@@ -462,11 +473,14 @@ class LegalIndexer:
           - in memory chunk_metadata from `chunks` table
           - BM25 corpus and model from `docs` table
         """
+        start = time.time()
+        print("Initializing indexer")
         indexer = LegalIndexer(
             db_path=db_path,
             embedding_model_name=embedding_model_name,
         )
 
+        print("Loading FAISS")
         # Load FAISS
         indexer.faiss_index = faiss.read_index(faiss_path)
         indexer.embedding_dim = indexer.faiss_index.d
@@ -477,7 +491,7 @@ class LegalIndexer:
         rows = cur.execute("SELECT * FROM chunks ORDER BY vector_id").fetchall()
 
         indexer.chunk_metadata = []
-        for row in rows:
+        for row in tqdm(rows, desc="Loading chunks"):
             pages = json.loads(row["pages_json"]) if row["pages_json"] else []
             indexer.chunk_metadata.append(
                 ChunkRecord(
@@ -525,7 +539,8 @@ class LegalIndexer:
             indexer.bm25_doc_ids.append(doc_id)
 
         indexer._finalize_bm25()
-
+        elapsed = time.time() - start
+        print(f"Loaded in {elapsed:.2f}s")
         return indexer
 
 
