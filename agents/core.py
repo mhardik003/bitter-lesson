@@ -4,7 +4,7 @@ import os
 from batch_eval_to_md import encode_query, faiss_search, summarize_text, load_chunks
 from pathlib import Path
 from typing import List
-
+import streamlit as st
 
 MPNET_INDEX = Path(
     "data_out/index/vector/faiss_sentence-transformers-all-mpnet-base-v2_g512.index"
@@ -14,10 +14,20 @@ MPNET_IDS = Path(
 )
 CHUNKS_PATH = Path("data_out/chunks.jsonl")
 
-dotenv.load_dotenv()
-lm = dspy.LM("gemini/gemini-2.5-flash", api_key=os.getenv("GEMINI_KEY"))
-dspy.configure(lm=lm)
+
+
+@st.cache_resource
+def load_dspy():
+    dotenv.load_dotenv()
+    lm = dspy.LM("gemini/gemini-2.5-flash", api_key=os.getenv("GEMINI_KEY"))
+    dspy.configure(lm=lm)
+    return lm
+
+# This executes ONCE per session, no matter how many Streamlit re-runs
+lm = load_dspy()
+
 id2chunk = load_chunks(CHUNKS_PATH)
+
 
 
 def get_docs(qtext: str):
@@ -114,6 +124,9 @@ def looped_search_rag(query: str, max_tries=5):
     case_study_reasoning, case_study, citations = case_study_outputs.reasoning, case_study_outputs.case_study, case_study_outputs.citations
 
     return case_study_reasoning, case_study, final_revelant_chunks, citations
+
+
+
 
 
 # for testing
