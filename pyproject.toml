@@ -17,6 +17,7 @@ dependencies = [
     "pip>=25.2",
     "poppler-utils>=0.1.0",
     "rank-bm25>=0.2.2",
+    "sentence-transformers>=5.1.2",
     "tokenizers==0.20.3",
     "torch==2.6.0",
     "torchvision>=0.21.0",
