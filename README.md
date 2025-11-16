@@ -1,3 +1,14 @@
+# TODO
+- [ ] Metadata pipeline
+- [ ] Chunking final
+- [ ] Vector Index
+- [ ] BM25 Index
+- [ ] Tools for above
+- [ ] RAG agent for case study
+- [ ] RAG agent which can call case study
+
+
+
 [![Review Assignment Due Date](https://classroom.github.com/assets/deadline-readme-button-22041afd0340ce965d47ae6ef1cefeee28c7c493a6346c4f15d667ab976d596c.svg)](https://classroom.github.com/a/PHuQlbNP)
 # **Bitter Lesson — Legal SME for Civil Law (India): Contracts and Agreements**
 
@@ -75,35 +86,19 @@ python batch_vllm_ocr.py \
 
 ## Preprocessing and Chunking
 
-After OCR:
+We clean the DeepSeek OCR output (remove ref/det tags, empty table cells, extra punctuation) but keep inline page markers like <<<PAGE X>>>. The text is then split into pages, concatenated into a single global string, and each page’s character span is recorded.
 
-### Cleaning
+We tokenize the global text once using the MPNet tokenizer and build fixed-size, non-overlapping token windows at multiple granularities (384, 256, 128). Each chunk stores its text and the page numbers whose spans overlap it.
 
-* Strip DeepSeek tags `<|ref|>`, `<|det|>` and empty `<td></td>` cells.
-* Collapse redundant punctuation (e.g., `. .` → `.`).
-* Normalize whitespace, lowercase text, preserve section numbering.
+Short tail fragments are pruned, and larger granularities skip tails that the smallest granularity already covers. This avoids duplicate end-chunks and keeps the index compact and page-accurate.
 
-### Chunking
-
-* Multi-granularity chunks at **2048**, **512**, and **128** tokens.
-* Deterministic IDs of form:
-
-  ```
-  <doc_id>::sec/<section_id>::g=<granularity>::o=<offset>
-  ```
-* Neighbor pointers allow multi-step retrieval.
-* Chunks store both normalized and original text.
-
-
-```bash
-python chunk_and_index.py \
-  --md_dir data_md/md \
-  --out_dir data_out \
-  --granularities 2048,512,128 \
-  --bm25_granularity 512 \
-  --faiss_granularity 512 \
-  --vector_model sentence-transformers/all-mpnet-base-v2 \
-  --device cpu
+```python
+def chunk_md_with_granularities(
+    md_text: str,
+    tokenizer=None,
+    token_window_sizes: List[int] = (384, 256, 128),
+    min_tokens: int = 32,
+) -> Dict[int, List[Dict[str, Any]]]
 ```
 
 
