@@ -151,7 +151,7 @@ def chunk_md_with_granularities(
         )
         # For chunking we only need offsets, not model forward.
         # Bump max length to avoid warnings on long docs.
-        tokenizer.model_max_length = 100000
+        tokenizer.model_max_length = 10000000
 
     # 1. Split cleaned text into pages
     pages = _split_into_pages(md_text)
