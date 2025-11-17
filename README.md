@@ -1,11 +1,16 @@
 # TODO
-- [ ] Metadata pipeline
-- [ ] Chunking final
-- [ ] Vector Index
-- [ ] BM25 Index
-- [ ] Tools for above
-- [ ] RAG agent for case study
-- [ ] RAG agent which can call case study
+- [x] Metadata pipeline
+- [x] Chunking final
+- [x] Vector Index
+- [x] BM25 Index
+- [x] Tools for above
+- [x] RAG agent for case study
+- [x] RAG agent which can call case study
+- [x] Tools for email 
+- [ ] tools for pandoc/latex running
+- [ ] Restructure
+- [ ] Meta Agent
+- [ ] UI check
 
 
 

@@ -9,9 +9,9 @@ from vllm import LLM, SamplingParams
 
 MODEL_NAME = "google/gemma-3-4b-it"
 CORPUS_PATH = "/scratch/akshit.kumar/md/5kcorpus.jsonl"
-OUTPUT_META_PATH = "/scratch/akshit.kumar/md/5k_meta.jsonl"  # output jsonl
+OUTPUT_META_PATH = "/scratch/akshit.kumar/md/5k_meta.jsonl"
 
-BATCH_SIZE = 16  # tune for your GPU and context length
+BATCH_SIZE = 16
 MAX_CHARS_MD = 64000  # 64k chars: enough for metadata
 
 
@@ -149,9 +149,9 @@ def main():
     llm = LLM(model=MODEL_NAME)
 
     sampling_params = SamplingParams(
-        temperature=0.0,  # deterministic for JSON
+        temperature=0.0,
         top_p=1.0,
-        max_tokens=4096,  # tune if summaries get cut off
+        max_tokens=4096,
     )
 
     docs = load_corpus(CORPUS_PATH)
