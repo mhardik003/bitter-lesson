@@ -38,3 +38,8 @@ dependencies = [
 [tool.pyright]
 venv = ".venv"
 venvPath = "."
+
+[dependency-groups]
+dev = [
+  "python-lsp-server[all]",  # pylsp + common plugins
+]

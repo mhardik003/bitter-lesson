@@ -11,7 +11,7 @@ INDEXER_BASE_URL = f"http://localhost:{os.getenv('BACKEND_PORT') or 8000}"
 def search_bm25(qtext: str, top_k: int = 20) -> List[Dict[str, Any]]:
     """Keyword search over doc level metadata.
     Returns doc_id and extracted metadata (includes case_title, decision_date,
-    statutes_mentioned, court, parties, topics, summary, sections).
+    statutes_mentioned, court, parties, topics, summary, sections, pdf_url, pdf_path).
     """
     resp = requests.post(
         f"{INDEXER_BASE_URL}/search/bm25",
@@ -38,7 +38,8 @@ def search_faiss(qtext: str, top_k: int = 20) -> List[Dict[str, Any]]:
 
 
 def get_doc_metadata(doc_id: str) -> Dict[str, Any]:
-    """Get document metadata given a doc_id."""
+    """Get document metadata (includes case_title, decision_date,
+    statutes_mentioned, court, parties, topics, summary, sections, pdf_url and pdf_path) given a doc_id."""
     resp = requests.post(
         f"{INDEXER_BASE_URL}/doc/metadata",
         json={"doc_id": doc_id},
@@ -58,7 +59,7 @@ def get_doc_metadata(doc_id: str) -> Dict[str, Any]:
 def get_doc_content(doc_id: str, pages: Optional[List[int]] = None) -> str:
     """
     Load markdown for doc_id via backend.
-    If pages is given, backend will return only those pages.
+    If pages is given (recommended), backend will return only those pages.
     """
     resp = requests.post(
         f"{INDEXER_BASE_URL}/doc/content",

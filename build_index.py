@@ -1,4 +1,4 @@
-from index import LegalIndexer  # your module
+from index import LegalIndexer
 
 
 JSONL_PATH = "/scratch/akshit.kumar/md/5k_meta.jsonl"

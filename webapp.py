@@ -1,14 +1,11 @@
-import os
 from typing import List, Dict, Any, Optional, TypedDict, Tuple
 
 import streamlit as st
 import dspy
 
-
-# import logging
-# logging.basicConfig(format="%(levelname)s:%(message)s", level=logging.DEBUG)
-
-from agents.search_agent import create_case_study_agent, create_chat_agent  # your file
+from agents.core import (
+    create_chat_agent,
+)  # your file, chat agent can internally call case study stuff
 
 
 # ===============================
@@ -37,7 +34,6 @@ class ChatMessage(TypedDict, total=False):
 # 2. DSPy agent and streaming
 # ===============================
 
-agent_case_study = create_case_study_agent()
 agent_chat = create_chat_agent()
 
 
@@ -59,29 +55,11 @@ class MyStatusMessageProvider(dspy.streaming.StatusMessageProvider):
         return f"TOOL_END::{outputs}"
 
 
-agent_case_study = create_case_study_agent()
-agent_chat = create_chat_agent()
-
-# Separate listeners for each agent
-stream_listeners_case = [
-    dspy.streaming.StreamListener(
-        signature_field_name="next_thought",
-        # no allow_reuse needed here
-    )
-]
-
 stream_listeners_chat = [
     dspy.streaming.StreamListener(
         signature_field_name="next_thought",
     )
 ]
-
-stream_case_study = dspy.streamify(
-    agent_case_study,
-    status_message_provider=MyStatusMessageProvider(),
-    stream_listeners=stream_listeners_case,
-    async_streaming=False,
-)
 
 stream_chat = dspy.streamify(
     agent_chat,
@@ -98,7 +76,7 @@ stream_chat = dspy.streamify(
 
 def render_trace_static(trace: TraceData) -> None:
     """
-    For old assistant messages, re-render the stored trace in the same style:
+    For old assistant messages, re render the stored trace in the same style:
       - expander
       - columns: thinking on left, per tool expanders on right
     """
@@ -127,7 +105,7 @@ def collect_trace_from_stream(
 ) -> Tuple[Optional[dspy.Prediction], TraceData]:
     """
     Pure helper that consumes a streamified agent output and builds a TraceData.
-    No Streamlit in here.
+    Not used in the UI path right now, but kept around as a utility.
 
     The format is driven by MyStatusMessageProvider above.
     """
@@ -166,6 +144,8 @@ def stream_react_into_ui(
 ) -> Tuple[Optional[dspy.Prediction], TraceData]:
     if extra_inputs is None:
         extra_inputs = {}
+
+    # Create the expander and the layout up front
     with st.expander("Agent thinking and tools", expanded=True):
         col_thinking, col_tools = st.columns(2)
         with col_thinking:
@@ -175,7 +155,7 @@ def stream_react_into_ui(
             tools_container = st.container()
             tool_output_placeholders: List[st.delta_generator.DeltaGenerator] = []
 
-    # call the chosen stream function
+    # Call the chosen stream function
     output_stream = stream_fn(query=query_value, **extra_inputs)
 
     final_pred: Optional[dspy.Prediction] = None
@@ -187,6 +167,7 @@ def stream_react_into_ui(
             if chunk.signature_field_name == "next_thought":
                 accumulated_thought += chunk.chunk
                 thinking_placeholder.markdown(f"**Thinking:** {accumulated_thought}")
+
         elif isinstance(chunk, dspy.streaming.StatusMessage):
             msg = chunk.message or ""
             if msg.startswith("TOOL_START::"):
@@ -199,12 +180,14 @@ def stream_react_into_ui(
                     out_placeholder = st.empty()
                     out_placeholder.markdown("_Running..._")
                     tool_output_placeholders.append(out_placeholder)
+
             elif msg.startswith("TOOL_END::"):
                 _, outputs = msg.split("::", 1)
                 if tools:
                     tools[-1]["outputs"] = outputs
                 if tool_output_placeholders:
                     tool_output_placeholders[-1].code(outputs, language="text")
+
         elif isinstance(chunk, dspy.Prediction):
             final_pred = chunk
 
@@ -222,107 +205,56 @@ def build_history_string(messages: List[ChatMessage]) -> str:
 
 
 # ===============================
-# 4. Streamlit app: chat loop
+# 4. Streamlit app: single conversational loop
 # ===============================
 
 st.set_page_config(page_title="Legal Contract and Agreements Agent", page_icon="LMA")
 
 st.title("Legal Contract and Agreements Agent")
 st.write(
-    "Ask a question related to contracts or agreements. "
-    "The agent will search your legal index, call tools, and build a case study."
+    "Conversational legal agent that can answer questions about contracts and agreements, "
+    "and internally call specialized tools or case study generators as needed."
 )
 
-# Initialize separate histories
-if "messages_case_study" not in st.session_state:
-    st.session_state.messages_case_study: List[ChatMessage] = []
+# Single history for the conversational agent
 if "messages_chat" not in st.session_state:
     st.session_state.messages_chat: List[ChatMessage] = []
 
-# --- Agent selector + history + single bottom input ---
+# Render history
+for msg in st.session_state.messages_chat:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+        if msg.get("role") == "assistant" and "trace" in msg:
+            render_trace_static(msg["trace"])  # type: ignore[arg-type]
 
-# Choose which agent / conversation is active
-mode = st.radio(
-    "Choose agent",
-    ["Case study", "Conversational"],
-    horizontal=True,
-)
-
-# Render history for the selected agent
-if mode == "Case study":
-    st.write(
-        "Ask a question related to contracts or agreements. "
-        "The agent will search your legal index, call tools, and build a case study."
-    )
-    for msg in st.session_state.messages_case_study:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-            if msg.get("role") == "assistant" and "trace" in msg:
-                render_trace_static(msg["trace"])  # type: ignore[arg-type]
-
-elif mode == "Conversational":
-    st.write("Conversational agent that sees previous messages as context.")
-    for msg in st.session_state.messages_chat:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-            if msg.get("role") == "assistant" and "trace" in msg:
-                render_trace_static(msg["trace"])  # type: ignore[arg-type]
-
-# Single input, pinned at bottom (not inside tabs / columns / containers)
+# Single input, pinned at bottom
 prompt = st.chat_input(
-    "Ask something…"
-    if mode == "Conversational"
-    else "Ask something like: `Financial repercussions for delay in fulfilling Conditions Precedent`"
+    "Ask something related to contracts, agreements, or case studies..."
 )
 
 if prompt:
-    if mode == "Case study":
-        # ----- case-study flow (your old user_query branch) -----
-        st.session_state.messages_case_study.append(
-            ChatMessage(role="user", content=prompt)
+    # User message
+    st.session_state.messages_chat.append(ChatMessage(role="user", content=prompt))
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    # Build history string excluding the just appended user message
+    history_str = build_history_string(st.session_state.messages_chat[:-1])
+
+    # Assistant answer
+    with st.chat_message("assistant"):
+        pred, trace = stream_react_into_ui(
+            query_value=prompt,
+            stream_fn=stream_chat,
+            extra_inputs={"history": history_str},
         )
-        with st.chat_message("user"):
-            st.markdown(prompt)
+        if pred is not None and hasattr(pred, "answer"):
+            answer_text = str(pred.answer)
+        else:
+            answer_text = "Agent did not return an answer."
 
-        with st.chat_message("assistant"):
-            pred, trace = stream_react_into_ui(
-                query_value=prompt,
-                stream_fn=stream_case_study,
-            )
-            if pred is not None and hasattr(pred, "case_study_md"):
-                answer_text = str(pred.case_study_md)
-            elif pred is not None and hasattr(pred, "answer"):
-                answer_text = str(pred.answer)
-            else:
-                answer_text = "Agent did not return a case study."
+        st.markdown(answer_text)
 
-            st.markdown(answer_text)
-
-        st.session_state.messages_case_study.append(
-            ChatMessage(role="assistant", content=answer_text, trace=trace)
-        )
-
-    else:
-        # ----- conversational flow (your old chat_input branch) -----
-        st.session_state.messages_chat.append(ChatMessage(role="user", content=prompt))
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        history_str = build_history_string(st.session_state.messages_chat[:-1])
-
-        with st.chat_message("assistant"):
-            pred, trace = stream_react_into_ui(
-                query_value=prompt,
-                stream_fn=stream_chat,
-                extra_inputs={"history": history_str},
-            )
-            if pred is not None and hasattr(pred, "answer"):
-                answer_text = str(pred.answer)
-            else:
-                answer_text = "Agent did not return an answer."
-
-            st.markdown(answer_text)
-
-        st.session_state.messages_chat.append(
-            ChatMessage(role="assistant", content=answer_text, trace=trace)
-        )
+    st.session_state.messages_chat.append(
+        ChatMessage(role="assistant", content=answer_text, trace=trace)
+    )

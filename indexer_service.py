@@ -1,17 +1,24 @@
+import dotenv
 import time
 from typing import List, Dict, Any, Optional
+
+import subprocess
+import shutil
+from pathlib import Path
+import tempfile
+import logging
 
 from flask import Flask, request, jsonify, abort, send_from_directory
 import os
 
-from index import LegalIndexer  # your LegalIndexer class
+from index import LegalIndexer
 
 DB_PATH = "/scratch/akshit.kumar/indices/legal_index.db"
 FAISS_PATH = "/scratch/akshit.kumar/indices/faiss.index"
 
 app = Flask(__name__)
+app.logger.setLevel(logging.INFO)
 
-import dotenv
 
 dotenv.load_dotenv()
 
@@ -21,6 +28,123 @@ print("Chunks:", len(indexer.chunk_metadata))
 print("BM25 docs:", len(indexer.bm25_doc_ids))
 
 PDF_ROOT = "/scratch/akshit.kumar/pdfs/sources"
+
+GENERATED_OUTPUT_ROOT = "/scratch/akshit.kumar/generated"
+os.makedirs(GENERATED_OUTPUT_ROOT, exist_ok=True)
+
+PDFLATEX_BIN = os.getenv("PDFLATEX_BIN")
+PANDOC_BIN = os.getenv("PANDOC_BIN")
+
+
+def _safe_basename(basename: str) -> str:
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in basename)
+    if not safe:
+        safe = f"doc_{int(time.time())}"
+    return safe[:64]
+
+
+def run_pandoc(markdown_text: str, basename: str, fmt: str) -> str:
+    """
+    Run pandoc to convert markdown_text to the given format.
+    Returns absolute path to the generated file.
+
+    fmt can be: 'pdf', 'latex', 'docx', 'pptx', 'html', 'beamer-pdf', etc.
+    """
+    safe = _safe_basename(basename)
+    tempdir = tempfile.mkdtemp(prefix="pandoc_", dir="/tmp")
+    md_path = Path(tempdir) / f"{safe}.md"
+    md_path.write_text(markdown_text)
+
+    # Decide target format and output extension
+    if fmt == "pdf":
+        target = "pdf"
+        ext = "pdf"
+        args = ["-t", "pdf", f"--pdf-engine={PDFLATEX_BIN}"]
+    elif fmt == "latex":
+        target = "latex"
+        ext = "tex"
+        args = ["-t", "latex"]
+    elif fmt == "docx":
+        target = "docx"
+        ext = "docx"
+        args = ["-t", "docx"]
+    elif fmt == "pptx":
+        target = "pptx"
+        ext = "pptx"
+        args = ["-t", "pptx"]
+    elif fmt == "html":
+        target = "html"
+        ext = "html"
+        args = ["-t", "html"]
+    elif fmt == "beamer-pdf":
+        # pandoc markdown -> beamer -> pdf
+        target = "beamer"
+        ext = "pdf"
+        args = ["-t", "beamer", f"--pdf-engine={PDFLATEX_BIN}"]
+    else:
+        raise ValueError(f"Unsupported format: {fmt}")
+
+    out_path = Path(GENERATED_OUTPUT_ROOT) / f"{safe}.{ext}"
+
+    cmd = [PANDOC_BIN, str(md_path), "-o", str(out_path)] + args
+
+    proc = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.decode("utf-8", errors="ignore"))
+
+    return str(out_path)
+
+
+@app.route("/generated/<path:filename>")
+def serve_generated(filename: str):
+    return send_from_directory(GENERATED_OUTPUT_ROOT, filename)
+
+
+@app.route("/render", methods=["POST"])
+def render():
+    """
+    JSON:
+      {
+        "markdown": "...",
+        "format": "pdf" | "latex" | "docx" | "pptx" | "html" | "beamer-pdf",
+        "basename": "optional_name"
+      }
+    """
+    data = request.get_json(force=True) or {}
+    markdown_text = data.get("markdown")
+    fmt = data.get("format")
+    basename = data.get("basename") or f"case_study_{int(time.time())}"
+
+    if not markdown_text:
+        return jsonify({"error": "Missing 'markdown'"}), 400
+    if not fmt:
+        return jsonify({"error": "Missing 'format'"}), 400
+
+    try:
+        out_path = run_pandoc(markdown_text, basename, fmt)
+    except Exception as e:
+        return jsonify(
+            {
+                "error": "render_failed",
+                "detail": str(e),
+            }
+        ), 500
+
+    filename = os.path.basename(out_path)
+    base = request.url_root.rstrip("/")
+    url = f"{base}/generated/{filename}"
+
+    return jsonify(
+        {
+            "path": out_path,
+            "url": url,
+            "format": fmt,
+        }
+    )
 
 
 @app.route("/pdf")
