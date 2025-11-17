@@ -42,7 +42,7 @@ class LegalIndexer:
         embedding_model_name: str = "sentence-transformers/all-mpnet-base-v2",
     ) -> None:
         # SQLite
-        self.conn = sqlite3.connect(db_path)
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._init_db()
 
@@ -382,7 +382,9 @@ class LegalIndexer:
         if not row:
             raise ValueError(f"Unknown doc_id: {doc_id}")
         if row["extracted_meta_json"]:
-            return json.loads(row["extracted_meta_json"])
+            return {"pdf_path": row["pdf_path"]} | json.loads(
+                row["extracted_meta_json"]
+            )
         else:
             raise ValueError(f"Metadata not found for doc_id: {doc_id}")
 
