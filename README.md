@@ -1,6 +1,3 @@
-[![Review Assignment Due Date](https://classroom.github.com/assets/deadline-readme-button-22041afd0340ce965d47ae6ef1cefeee28c7c493a6346c4f15d667ab976d596c.svg)](https://classroom.github.com/a/PHuQlbNP)
-
-
 # Bitter Lesson — Legal SME for Civil Law (India): Contracts and Agreements
 This repository provides an end-to-end RAG SME for Indian Contracts Law.
 A RAG system for a Subject Matter Expert on Contracts and
